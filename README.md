@@ -54,7 +54,7 @@ Replace `your_n8n_username`, `your_n8n_password`, and `your_waha_api_key` with y
 In your terminal, navigate to the project directory and run:
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 This command will build and start the containers in detached mode.

@@ -1,65 +1,71 @@
-version: "3.8"
-
 services:
-  n8n:
-    image: n8nio/n8n:latest
-    container_name: n8n
-    restart: unless-stopped
-    ports:
-      - "5678:5678"
+  postgres:
+    image: postgres:16
+    container_name: n8n_postgres
+    restart: always
     environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+      - POSTGRES_NON_ROOT_USER
+      - POSTGRES_NON_ROOT_PASSWORD
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: n8n
+    restart: always
+    environment:
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
       - DB_POSTGRESDB_PORT=5432
       - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
-      - DB_POSTGRESDB_USER=${POSTGRES_USER}
-      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_POSTGRESDB_USER=${POSTGRES_NON_ROOT_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_NON_ROOT_PASSWORD}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
       - N8N_HOST=${N8N_HOST}
       - N8N_PORT=5678
       - N8N_PROTOCOL=http
       - N8N_EDITOR_BASE_URL=http://${N8N_HOST}:5678
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
       - WEBHOOK_URL=http://${N8N_HOST}:5678
-    volumes:
-      - n8n_data:/home/node/.n8n
+    ports:
+      - 5678:5678
     depends_on:
-      - postgres
-    networks:
-      - n8n_network
-
-  postgres:
-    image: postgres:13
-    container_name: postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      postgres:
+        condition: service_healthy
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - n8n_network
+      - ./data/n8n:/home/node/.n8n
 
   waha:
     image: devlikeapro/waha
     container_name: waha
-    restart: unless-stopped
+    platform: linux/amd64
+    restart: always
     ports:
       - "3000:3000"
     environment:
-      - WAHA_API_KEY=${WAHA_API_KEY}
+      - WHATSAPP_DEFAULT_ENGINE=NOWEB
+      - WHATSAPP_HOOK_URL=http://n8n:5678/webhook/waha
+      - WHATSAPP_HOOK_EVENTS=message
     volumes:
-      - waha_data:/app/data
-    networks:
-      - n8n_network
-
-volumes:
-  n8n_data:
-  postgres_data:
-  waha_data:
+      - ./data/waha:/app/data
+    depends_on:
+      - n8n
 
 networks:
-  n8n_network:
+  default:
     driver: bridge
