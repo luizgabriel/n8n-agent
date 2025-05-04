@@ -4,7 +4,6 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:17
-    container_name: n8n_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -30,13 +29,15 @@ services:
   # Redis Cache
   redis:
     image: redis:7
-    container_name: evolution_redis
     restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - ./data/redis:/data
     command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      - REDIS_USERNAME=${REDIS_USERNAME}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -48,14 +49,13 @@ services:
   # RabbitMQ Broker
   rabbitmq:
     image: rabbitmq:3-management
-    container_name: evolution_rabbitmq
     restart: unless-stopped
     ports:
       - "5672:5672" # AMQP
       - "15672:15672" # Management UI
     environment:
-      RABBITMQ_DEFAULT_USER: admin
-      RABBITMQ_DEFAULT_PASS: admin
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     volumes:
       - ./data/rabbitmq:/var/lib/rabbitmq
     healthcheck:
@@ -69,7 +69,6 @@ services:
   # Evolution API
   evolution-api:
     image: atendai/evolution-api:latest
-    container_name: evolution_api
     restart: unless-stopped
     depends_on:
       postgres:
@@ -85,11 +84,12 @@ services:
     environment:
       # Auth
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      CREDENTIALS_OVERWRITE_DATA_FILE:
 
       # Database
       DATABASE_ENABLED: "true"
       DATABASE_PROVIDER: "postgresql"
-      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_NON_ROOT_USER}:${POSTGRES_NON_ROOT_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}?schema=evolution
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_NON_ROOT_USER}:${POSTGRES_NON_ROOT_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=evolution
       DATABASE_CONNECTION_CLIENT_NAME: "evolution_exchange"
 
       # Data Saving (disabled)
@@ -104,7 +104,7 @@ services:
       # Server
       SERVER_TYPE: "http"
       SERVER_PORT: "8080"
-      SERVER_URL: http://${EVOLUTION_API_HOST}:8080
+      SERVER_URL: http://evolution-api:8080
 
       # Redis Cache
       CACHE_REDIS_ENABLED: "true"
@@ -115,16 +115,28 @@ services:
 
       # RabbitMQ
       RABBITMQ_ENABLED: "true"
-      RABBITMQ_URI: amqp://admin:admin@rabbitmq:5672/default
+      RABBITMQ_URI: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/default
       RABBITMQ_EXCHANGE_NAME: evolution_exchange
       RABBITMQ_GLOBAL_ENABLED: "true"
     networks:
       - internal
 
+  # PG Admin
+  pgadmin:
+    image: dpage/pgadmin4
+    restart: unless-stopped
+    ports:
+      - 16543:16543
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+      PGADMIN_LISTEN_PORT: 16543
+    networks:
+      - internal
+
   # N8N Automation Tool
   n8n:
-    image: docker.n8n.io/n8nio/n8n
-    container_name: n8n
+    image: n8nio/n8n
     restart: unless-stopped
     depends_on:
       postgres:
@@ -140,11 +152,12 @@ services:
     environment:
       # Database
       DB_TYPE: postgresdb
-      DB_POSTGRESDB_HOST: ${POSTGRES_HOST}
+      DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
       DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
       DB_POSTGRESDB_USER: ${POSTGRES_NON_ROOT_USER}
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+      DB_POSTGRESDB_SCHEMA: n8n
 
       # Auth
       N8N_BASIC_AUTH_ACTIVE: "true"
@@ -152,12 +165,41 @@ services:
       N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
 
       # Server
-      N8N_HOST: ${N8N_HOST}
+      N8N_HOST: n8n
       N8N_PORT: 5678
       N8N_PROTOCOL: http
-      N8N_EDITOR_BASE_URL: http://${N8N_HOST}:5678
+      N8N_EDITOR_BASE_URL: http://n8n:5678
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
-      WEBHOOK_URL: http://${N8N_HOST}:5678
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${N8N_TIMEZONE}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+      QUEUE_BULL_REDIS_HOST: redis
+      QUEUE_BULL_REDIS_PORT: 6379
+      QUEUE_BULL_REDIS_USERNAME: redis
+      QUEUE_BULL_REDIS_PASSWORD: redis
+      EXECUTIONS_MODE: queue
+      WEBHOOK_URL: http://n8n:5678
+    networks:
+      - internal
+
+  # N8N Worker 1
+  n8n-worker-1:
+    image: n8nio/n8n
+    container_name: n8n-worker-1
+    restart: unless-stopped
+    command: worker
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      N8N_HOST: n8n
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: http://n8n:5678
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${N8N_TIMEZONE}
     networks:
       - internal
 
