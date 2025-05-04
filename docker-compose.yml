@@ -1,14 +1,17 @@
+version: "3.8"
+
 services:
+  # PostgreSQL Database
   postgres:
     image: postgres:17
     container_name: n8n_postgres
     restart: unless-stopped
     environment:
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD
-      - POSTGRES_DB
-      - POSTGRES_NON_ROOT_USER
-      - POSTGRES_NON_ROOT_PASSWORD
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_NON_ROOT_USER: ${POSTGRES_NON_ROOT_USER}
+      POSTGRES_NON_ROOT_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./init-data.sh:/docker-entrypoint-initdb.d/init-data.sh
@@ -21,62 +24,143 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - internal
 
-  evolution-api:
-    container_name: evolution_api
-    image: atendai/evolution-api:latest
+  # Redis Cache
+  redis:
+    image: redis:7
+    container_name: evolution_redis
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal
+
+  # RabbitMQ Broker
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: evolution_rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # Management UI
     environment:
-      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
-      - DATABASE_ENABLED=true
-      - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_NON_ROOT_USER}:${POSTGRES_NON_ROOT_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}
-      - DATABASE_CONNECTION_CLIENT_NAME=evolution_exchange
-      - DATABASE_SAVE_DATA_INSTANCE=true
-      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
-      - DATABASE_SAVE_MESSAGE_UPDATE=true
-      - DATABASE_SAVE_DATA_CONTACTS=false
-      - DATABASE_SAVE_DATA_CHATS=false
-      - DATABASE_SAVE_DATA_LABELS=false
-      - DATABASE_SAVE_DATA_HISTORIC=false
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # Evolution API
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: evolution_api
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
     volumes:
       - ./data/evolution:/evolution/instances
+    environment:
+      # Auth
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
 
+      # Database
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: "postgresql"
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_NON_ROOT_USER}:${POSTGRES_NON_ROOT_PASSWORD}@${POSTGRES_HOST}:5432/${POSTGRES_DB}?schema=evolution
+      DATABASE_CONNECTION_CLIENT_NAME: "evolution_exchange"
+
+      # Data Saving (disabled)
+      DATABASE_SAVE_DATA_INSTANCE: "false"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
+      DATABASE_SAVE_MESSAGE_UPDATE: "false"
+      DATABASE_SAVE_DATA_CONTACTS: "false"
+      DATABASE_SAVE_DATA_CHATS: "false"
+      DATABASE_SAVE_DATA_LABELS: "false"
+      DATABASE_SAVE_DATA_HISTORIC: "false"
+
+      # Server
+      SERVER_TYPE: "http"
+      SERVER_PORT: "8080"
+      SERVER_URL: http://${EVOLUTION_API_HOST}:8080
+
+      # Redis Cache
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_REDIS_SAVE_INSTANCES: "false"
+      CACHE_LOCAL_ENABLED: "false"
+
+      # RabbitMQ
+      RABBITMQ_ENABLED: "true"
+      RABBITMQ_URI: amqp://admin:admin@rabbitmq:5672/default
+      RABBITMQ_EXCHANGE_NAME: evolution_exchange
+      RABBITMQ_GLOBAL_ENABLED: "true"
+    networks:
+      - internal
+
+  # N8N Automation Tool
   n8n:
     image: docker.n8n.io/n8nio/n8n
     container_name: n8n
     restart: unless-stopped
-    environment:
-      - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=${POSTGRES_HOST}
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
-      - DB_POSTGRESDB_USER=${POSTGRES_NON_ROOT_USER}
-      - DB_POSTGRESDB_PASSWORD=${POSTGRES_NON_ROOT_PASSWORD}
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
-      - N8N_HOST=${N8N_HOST}
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - N8N_EDITOR_BASE_URL=http://${N8N_HOST}:5678
-      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
-      - WEBHOOK_URL=http://${N8N_HOST}:5678
-    ports:
-      - 5678:5678
     depends_on:
       postgres:
         condition: service_healthy
       evolution-api:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - 5678:5678
     volumes:
       - ./data/n8n:/home/node/.n8n
+    environment:
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${POSTGRES_HOST}
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_NON_ROOT_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+
+      # Auth
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
+
+      # Server
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: http://${N8N_HOST}:5678
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      WEBHOOK_URL: http://${N8N_HOST}:5678
+    networks:
+      - internal
 
 networks:
-  default:
+  internal:
     driver: bridge
