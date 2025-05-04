@@ -1,8 +1,8 @@
 services:
   postgres:
-    image: postgres:16
+    image: postgres:17
     container_name: n8n_postgres
-    restart: always
+    restart: unless-stopped
     environment:
       - POSTGRES_USER
       - POSTGRES_PASSWORD
@@ -22,13 +22,24 @@ services:
       timeout: 5s
       retries: 10
 
+  evolution-api:
+    container_name: evolution_api
+    image: atendai/evolution-api:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
+    volumes:
+      - ./data/evolution:/evolution/instances
+
   n8n:
     image: docker.n8n.io/n8nio/n8n
     container_name: n8n
-    restart: always
+    restart: unless-stopped
     environment:
       - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_HOST=${POSTGRES_HOST}
       - DB_POSTGRESDB_PORT=5432
       - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
       - DB_POSTGRESDB_USER=${POSTGRES_NON_ROOT_USER}
@@ -47,24 +58,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      evolution-api:
+        condition: service_healthy
     volumes:
       - ./data/n8n:/home/node/.n8n
-
-  waha:
-    image: devlikeapro/waha
-    container_name: waha
-    platform: linux/amd64
-    restart: always
-    ports:
-      - "3000:3000"
-    environment:
-      - WHATSAPP_DEFAULT_ENGINE=NOWEB
-      - WHATSAPP_HOOK_URL=http://n8n:5678/webhook/waha
-      - WHATSAPP_HOOK_EVENTS=message
-    volumes:
-      - ./data/waha:/app/data
-    depends_on:
-      - n8n
 
 networks:
   default:
