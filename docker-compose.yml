@@ -1,4 +1,49 @@
-version: "3.8"
+x-shared: &shared
+  environment:
+    # Database
+    DB_TYPE: postgresdb
+    DB_POSTGRESDB_HOST: postgres
+    DB_POSTGRESDB_PORT: 5432
+    DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+    DB_POSTGRESDB_USER: ${POSTGRES_NON_ROOT_USER}
+    DB_POSTGRESDB_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
+    DB_POSTGRESDB_SCHEMA: n8n
+
+    # Auth
+    N8N_BASIC_AUTH_ACTIVE: "true"
+    N8N_BASIC_AUTH_USER: ${N8N_USER}
+    N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
+
+    # Server
+    N8N_HOST: n8n
+    N8N_PORT: 5678
+    N8N_PROTOCOL: http
+    N8N_EDITOR_BASE_URL: http://n8n:5678
+    N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+    N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+    GENERIC_TIMEZONE: ${N8N_TIMEZONE}
+    N8N_RUNNERS_ENABLED: "true"
+    N8N_RUNNERS_MODE: external
+    N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+    QUEUE_BULL_REDIS_HOST: redis
+    QUEUE_BULL_REDIS_PORT: 6379
+    QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
+    EXECUTIONS_MODE: queue
+    OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: "true"
+    WEBHOOK_URL: http://n8n:5678
+    QUEUE_HEALTH_CHECK_ACTIVE: true
+    VUE_APP_URL_BASE_API: http://n8n
+    WEBHOOK_TUNNEL_URL: http://n8n
+
+  volumes:
+    - ./data/n8n:/home/node/.n8n
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
 
 services:
   # PostgreSQL Database
@@ -30,13 +75,19 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     volumes:
       - ./data/redis:/data
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD}",
+      ]
+    ports:
+      - "6379:6379"
     environment:
-      - REDIS_USERNAME=${REDIS_USERNAME}
       - REDIS_PASSWORD=${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -56,6 +107,7 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: default
     volumes:
       - ./data/rabbitmq:/var/lib/rabbitmq
     healthcheck:
@@ -68,7 +120,7 @@ services:
 
   # Evolution API
   evolution-api:
-    image: atendai/evolution-api:latest
+    image: atendai/evolution-api:v2.2.3
     restart: unless-stopped
     depends_on:
       postgres:
@@ -84,16 +136,15 @@ services:
     environment:
       # Auth
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
-      CREDENTIALS_OVERWRITE_DATA_FILE:
 
       # Database
       DATABASE_ENABLED: "true"
       DATABASE_PROVIDER: "postgresql"
-      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_NON_ROOT_USER}:${POSTGRES_NON_ROOT_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=evolution
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=evolution
       DATABASE_CONNECTION_CLIENT_NAME: "evolution_exchange"
 
       # Data Saving (disabled)
-      DATABASE_SAVE_DATA_INSTANCE: "false"
+      DATABASE_SAVE_DATA_INSTANCE: "true"
       DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
       DATABASE_SAVE_MESSAGE_UPDATE: "false"
       DATABASE_SAVE_DATA_CONTACTS: "false"
@@ -105,10 +156,11 @@ services:
       SERVER_TYPE: "http"
       SERVER_PORT: "8080"
       SERVER_URL: http://evolution-api:8080
+      WEBSOCKET_ENABLED: "true"
 
       # Redis Cache
       CACHE_REDIS_ENABLED: "true"
-      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_URI: redis://:${REDIS_PASSWORD}@redis:6379/6
       CACHE_REDIS_PREFIX_KEY: evolution
       CACHE_REDIS_SAVE_INSTANCES: "false"
       CACHE_LOCAL_ENABLED: "false"
@@ -121,85 +173,35 @@ services:
     networks:
       - internal
 
-  # PG Admin
-  pgadmin:
-    image: dpage/pgadmin4
-    restart: unless-stopped
-    ports:
-      - 16543:16543
-    environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
-      PGADMIN_LISTEN_PORT: 16543
-    networks:
-      - internal
-
   # N8N Automation Tool
   n8n:
+    <<: *shared
     image: n8nio/n8n
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-      evolution-api:
-        condition: service_started
       rabbitmq:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      evolution-api:
+        condition: service_started
     ports:
       - 5678:5678
-    volumes:
-      - ./data/n8n:/home/node/.n8n
-    environment:
-      # Database
-      DB_TYPE: postgresdb
-      DB_POSTGRESDB_HOST: postgres
-      DB_POSTGRESDB_PORT: 5432
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
-      DB_POSTGRESDB_USER: ${POSTGRES_NON_ROOT_USER}
-      DB_POSTGRESDB_PASSWORD: ${POSTGRES_NON_ROOT_PASSWORD}
-      DB_POSTGRESDB_SCHEMA: n8n
-
-      # Auth
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_USER}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
-
-      # Server
-      N8N_HOST: n8n
-      N8N_PORT: 5678
-      N8N_PROTOCOL: http
-      N8N_EDITOR_BASE_URL: http://n8n:5678
-      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      GENERIC_TIMEZONE: ${N8N_TIMEZONE}
-      N8N_RUNNERS_ENABLED: "true"
-      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
-      QUEUE_BULL_REDIS_HOST: redis
-      QUEUE_BULL_REDIS_PORT: 6379
-      QUEUE_BULL_REDIS_USERNAME: redis
-      QUEUE_BULL_REDIS_PASSWORD: redis
-      EXECUTIONS_MODE: queue
-      WEBHOOK_URL: http://n8n:5678
     networks:
       - internal
 
   # N8N Worker 1
   n8n-worker-1:
+    <<: *shared
     image: n8nio/n8n
     container_name: n8n-worker-1
     restart: unless-stopped
     command: worker
     depends_on:
-      redis:
-        condition: service_healthy
-    environment:
-      N8N_HOST: n8n
-      N8N_PORT: 5678
-      N8N_PROTOCOL: http
-      N8N_EDITOR_BASE_URL: http://n8n:5678
-      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      GENERIC_TIMEZONE: ${N8N_TIMEZONE}
+      n8n:
+        condition: service_started
     networks:
       - internal
 
